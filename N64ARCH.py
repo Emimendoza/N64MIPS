@@ -8,20 +8,22 @@ import rabbitizer
 import re
 
 
-def parse_instruction_string(instruction_string):
+
+def get_instruction(word, addr):
+    inst = rabbitizer.Instruction(int.from_bytes(word, 'big', signed=False))
+    instruction_string = inst.disassemble()
     if ' . + 4' in instruction_string:
         instruction_string = instruction_string.replace(' . + 4 + (', ' ')
         instruction_string = instruction_string.replace(' << 2)', '')
     if 'func' in instruction_string:
-        instruction_string = instruction_string.replace('func_8', '0x')
+        instruction_string = instruction_string[0:instruction_string.find('func')] + f'{hex(((4+addr) & 0xF0000000) | (inst.getImmediate() << 2))}'
     instruction1 = instruction_string.split()
     instruction2 = [instruction1[0]]
     if len(instruction1) > 1:
         instruction2.append(instruction_string[len(instruction1[0])+1:instruction_string.find(instruction1[1])])
         for i in range(1, len(instruction1)):
             if instruction1[i].endswith(','):
-                instruction1[i] = instruction1[i][:-1]
-                instruction2.append(instruction1[i])
+                instruction2.append(instruction1[i][:-1])
                 instruction2.append(', ')
             elif instruction1[i].endswith(')'):
                 instruction2.append(instruction1[i][0:instruction1[i].find('(')])
@@ -31,10 +33,6 @@ def parse_instruction_string(instruction_string):
             else:
                 instruction2.append(instruction1[i])
     return instruction2
-
-def get_instruction(word):
-    return parse_instruction_string(rabbitizer.Instruction(int.from_bytes(word, 'big', signed=False)).disassemble())
-
 
 class N64(Architecture):
     name = 'N64'
@@ -116,22 +114,26 @@ class N64(Architecture):
 
     def get_instruction_info(self, data, addr):
         result = InstructionInfo()
-        instruction = get_instruction(data)
+        instruction = get_instruction(data, addr)
         if instruction[0] == 'b':
-            result.add_branch(BranchType.UnconditionalBranch, addr + 4 * int(instruction[-1], 16))
+            result.branch_delay = True
+            result.add_branch(BranchType.UnconditionalBranch, addr + 4 + 4 * int(instruction[-1], 16))
         elif instruction[0].startswith('b') and instruction[0] != 'break':
-            result.add_branch(BranchType.TrueBranch, addr + 4 * int(instruction[-1], 16))
-            result.add_branch(BranchType.FalseBranch, addr + 4)
+            result.branch_delay = True
+            result.add_branch(BranchType.TrueBranch, addr + 4 + 4 * int(instruction[-1], 16))
+            result.add_branch(BranchType.FalseBranch, addr + 8)
         elif instruction[0] in ['j', 'jal']:
-            result.add_branch(BranchType.UnconditionalBranch, (addr & 0xF0000000) | (int(instruction[-1][6:], 16) << 2))
+            result.branch_delay = True
+            result.add_branch(BranchType.UnconditionalBranch, int(instruction[-1], 16))
         elif instruction[0] in ['jr', 'jalr']:
+            result.branch_delay = True
             result.add_branch(BranchType.IndirectBranch)
 
         result.length = 4
         return result
 
     def get_instruction_text(self, data, addr):
-        instruction = get_instruction(data)
+        instruction = get_instruction(data, addr)
         tokens = []
         tokens.append(InstructionTextToken(InstructionTextTokenType.TextToken, instruction[0]))
         for i in range(1, len(instruction)):
@@ -141,6 +143,8 @@ class N64(Architecture):
                 tokens.append(InstructionTextToken(InstructionTextTokenType.OperandSeparatorToken, instruction[i]))
             elif instruction[i].startswith('$') or instruction[i] in ['TagHi', 'TagLo', 'Compare', 'Count', 'Cause']:
                 tokens.append(InstructionTextToken(InstructionTextTokenType.RegisterToken, instruction[i]))
+            elif instruction[i] in ['j', 'jal']:
+                tokens.append(InstructionTextToken(InstructionTextTokenType.PossibleAddressToken, instruction[i]))
             elif instruction[i].startswith('0x') or instruction[i].startswith('-0x'):
                 tokens.append(InstructionTextToken(InstructionTextTokenType.IntegerToken, instruction[i]))
             elif instruction[i] == '(' or instruction[i] == ')':
