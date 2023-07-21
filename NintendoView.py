@@ -19,7 +19,7 @@ class N64View(BinaryView):
         self.data = data
 
     def init(self):
-        # self.add_auto_segment(0, 0x1000000, 0, 0x1000, SegmentFlag.SegmentReadable | SegmentFlag.SegmentExecutable)
+        self.add_auto_segment(0x1000000, 0x2000000, 0, 0x2000000, SegmentFlag.SegmentReadable | SegmentFlag.SegmentExecutable)
         self.add_entry_point(0x0040)
         return True
 

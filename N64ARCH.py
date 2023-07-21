@@ -8,11 +8,32 @@ import rabbitizer
 import re
 
 
+def parse_instruction_string(instruction_string):
+    if ' . + 4' in instruction_string:
+        instruction_string = instruction_string.replace(' . + 4 + (', ' ')
+        instruction_string = instruction_string.replace(' << 2)', '')
+    if 'func' in instruction_string:
+        instruction_string = instruction_string.replace('func_8', '0x')
+    instruction1 = instruction_string.split()
+    instruction2 = [instruction1[0]]
+    if len(instruction1) > 1:
+        instruction2.append(instruction_string[len(instruction1[0])+1:instruction_string.find(instruction1[1])])
+        for i in range(1, len(instruction1)):
+            if instruction1[i].endswith(','):
+                instruction1[i] = instruction1[i][:-1]
+                instruction2.append(instruction1[i])
+                instruction2.append(', ')
+            elif instruction1[i].endswith(')'):
+                instruction2.append(instruction1[i][0:instruction1[i].find('(')])
+                instruction2.append('(')
+                instruction2.append(instruction1[i][instruction1[i].find('(')+1:-1])
+                instruction2.append(')')
+            else:
+                instruction2.append(instruction1[i])
+    return instruction2
+
 def get_instruction(word):
-    instruction = re.split(', |        ',rabbitizer.Instruction(word).disassemble())
-    if instruction[0].startswith('b') and instruction[0] != 'break':
-        instruction[-1] = instruction[-1].split('(')[-1].split()[0]
-    return instruction
+    return parse_instruction_string(rabbitizer.Instruction(int.from_bytes(word, 'big', signed=False)).disassemble())
 
 
 class N64(Architecture):
@@ -95,6 +116,17 @@ class N64(Architecture):
 
     def get_instruction_info(self, data, addr):
         result = InstructionInfo()
+        instruction = get_instruction(data)
+        if instruction[0] == 'b':
+            result.add_branch(BranchType.UnconditionalBranch, addr + 4 * int(instruction[-1], 16))
+        elif instruction[0].startswith('b') and instruction[0] != 'break':
+            result.add_branch(BranchType.TrueBranch, addr + 4 * int(instruction[-1], 16))
+            result.add_branch(BranchType.FalseBranch, addr + 4)
+        elif instruction[0] in ['j', 'jal']:
+            result.add_branch(BranchType.UnconditionalBranch, (addr & 0xF0000000) | (int(instruction[-1][6:], 16) << 2))
+        elif instruction[0] in ['jr', 'jalr']:
+            result.add_branch(BranchType.IndirectBranch)
+
         result.length = 4
         return result
 
@@ -102,18 +134,22 @@ class N64(Architecture):
         instruction = get_instruction(data)
         tokens = []
         tokens.append(InstructionTextToken(InstructionTextTokenType.TextToken, instruction[0]))
-        for i in range(1,len(instruction)):
-            if instruction[i].startswith('$'):
+        for i in range(1, len(instruction)):
+            if instruction[i] == ', ':
+                tokens.append(InstructionTextToken(InstructionTextTokenType.OperandSeparatorToken, instruction[i]))
+            elif instruction[i].startswith(' '):
+                tokens.append(InstructionTextToken(InstructionTextTokenType.OperandSeparatorToken, instruction[i]))
+            elif instruction[i].startswith('$') or instruction[i] in ['TagHi', 'TagLo', 'Compare', 'Count', 'Cause']:
                 tokens.append(InstructionTextToken(InstructionTextTokenType.RegisterToken, instruction[i]))
-            elif instruction[0].startswith('b') and instruction[0] != 'break' and instruction[i].startswith('0x'):
-                tokens.append(InstructionTextToken(InstructionTextTokenType.CodeRelativeAddressToken, instruction[i]))
             elif instruction[i].startswith('0x') or instruction[i].startswith('-0x'):
                 tokens.append(InstructionTextToken(InstructionTextTokenType.IntegerToken, instruction[i]))
-            elif instruction[i].startswith('func'):
-                tokens.append(InstructionTextToken(InstructionTextTokenType.PossibleAddressToken, '0x' + instruction[i][5:]))
+            elif instruction[i] == '(' or instruction[i] == ')':
+                tokens.append(InstructionTextToken(InstructionTextTokenType.OperandSeparatorToken, instruction[i]))
+            elif instruction[i].isdigit():
+                tokens.append(InstructionTextToken(InstructionTextTokenType.IntegerToken, instruction[i]))
             else:
                 tokens.append(InstructionTextToken(InstructionTextTokenType.TextToken, instruction[i]))
-                log_error('Unrecognized token:' + instruction[i])
+                log_error(f'Unrecognized token: {instruction[i]} in {instruction}')
         return tokens, 4
 
     def get_instruction_low_level_il(self, data, addr, il):
